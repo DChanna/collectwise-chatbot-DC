@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Bot, User, DollarSign, CheckCircle, AlertCircle, FileText } from 'lucide-react';
+import { Send, Bot, User, DollarSign, CheckCircle, AlertCircle, FileText, ExternalLink, Check, Upload, X, RefreshCw, Paperclip, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -7,6 +7,16 @@ interface Message {
   sender: 'bot' | 'user';
   timestamp: Date;
   isError?: boolean;
+}
+
+interface UploadedFile {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  uploadedAt: Date;
+  url?: string;
+  base64?: string;
 }
 
 interface PaymentPlan {
@@ -17,16 +27,30 @@ interface PaymentPlan {
 }
 
 const ChatInterface = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [currentDebt] = useState(2400);
+  const [messages, setMessages] = useState<Message[]>([{
+    id: '1',
+    content: `Hello! Our records show that you currently owe $${currentDebt.toLocaleString()}. Are you able to resolve this debt today?`,
+    sender: 'bot',
+    timestamp: new Date()
+  }]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [currentDebt] = useState(2400);
   const [negotiationState, setNegotiationState] = useState<'initial' | 'negotiating' | 'completed'>('initial');
   const [paymentPlan, setPaymentPlan] = useState<PaymentPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [requiresDocumentation, setRequiresDocumentation] = useState(false);
   const [userIncome, setUserIncome] = useState<number | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isUploadExpanded, setIsUploadExpanded] = useState(false);
+  const [canUploadMore, setCanUploadMore] = useState(false);
+  const [isProcessingDocs, setIsProcessingDocs] = useState(false);
+  const [documentMessages, setDocumentMessages] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -36,20 +60,16 @@ const ChatInterface = () => {
     scrollToBottom();
   }, [messages]);
 
+  // Cleanup file URLs on unmount
   useEffect(() => {
-    // Initial bot message with slight delay for better UX
-    const timer = setTimeout(() => {
-      const initialMessage: Message = {
-        id: '1',
-        content: `Hello! Our records show that you currently owe $${currentDebt.toLocaleString()}. Are you able to resolve this debt today?`,
-        sender: 'bot',
-        timestamp: new Date()
-      };
-      setMessages([initialMessage]);
-    }, 500);
-
-    return () => clearTimeout(timer);
-  }, [currentDebt]);
+    return () => {
+      uploadedFiles.forEach(file => {
+        if (file.url) {
+          URL.revokeObjectURL(file.url);
+        }
+      });
+    };
+  }, [uploadedFiles]);
 
   const addMessage = (content: string, sender: 'bot' | 'user', isError = false) => {
     const newMessage: Message = {
@@ -59,167 +79,26 @@ const ChatInterface = () => {
       timestamp: new Date(),
       isError
     };
-    setMessages(prev => [...prev, newMessage]);
+    setMessages(prev => {
+      // Prevent duplicate bot messages about documents
+      if (sender === 'bot' && content.toLowerCase().includes('documents did not demonstrate')) {
+        const hasSimilar = prev.some(msg => 
+          msg.sender === 'bot' && 
+          msg.content.toLowerCase().includes('documents did not demonstrate') &&
+          Date.now() - msg.timestamp.getTime() < 5000 // Within 5 seconds
+        );
+        if (hasSimilar) return prev;
+      }
+      return [...prev, newMessage];
+    });
   };
 
   const simulateTyping = async (response: string, isError = false) => {
     setIsTyping(true);
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+    // Reduced from 1-2 seconds to 0.3-0.8 seconds for faster responses
+    await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 500));
     setIsTyping(false);
     addMessage(response, 'bot', isError);
-  };
-
-  const generatePaymentOptions = (debtAmount: number, userInput: string) => {
-    const lowerInput = userInput.toLowerCase();
-    
-    // Helper function for precise payment calculation with cents
-    const calculatePaymentWithRemainder = (total: number, months: number) => {
-      const basePayment = Math.floor((total / months) * 100) / 100;
-      const totalBasePayments = basePayment * (months - 1);
-      const finalPayment = Math.round((total - totalBasePayments) * 100) / 100;
-      
-      return {
-        basePayment,
-        finalPayment,
-        months,
-        isEvenSplit: Math.abs(basePayment - finalPayment) < 0.01
-      };
-    };
-    
-    // Check for income information
-    const incomeMatch = userInput.match(/\$?(\d+(?:,\d{3})*)/);
-    const income = incomeMatch ? parseInt(incomeMatch[1].replace(',', '')) : null;
-    
-         if (income && income > 500) {
-       // Income-based negotiation strategy
-       if (income >= 8000) {
-         // HIGH INCOME: Start aggressive with 3 months
-         const plan = calculatePaymentWithRemainder(debtAmount, 3);
-         const paymentDescription = plan.isEvenSplit 
-           ? `$${plan.basePayment.toFixed(2)} per month for 3 months`
-           : `$${plan.basePayment.toFixed(2)} per month for 2 months, then $${plan.finalPayment.toFixed(2)} for the final payment`;
-         
-         return {
-           monthlyAmount: plan.basePayment,
-           termLength: 3,
-           message: `Based on your income of $${income.toLocaleString()}/month, I can offer a quick resolution: ${paymentDescription}. This represents only ${Math.round((plan.basePayment / income) * 100)}% of your monthly income and gets this resolved fast. Does this work? (Total: $${debtAmount.toLocaleString()})`
-         };
-       } else if (income >= 3000) {
-         // MEDIUM INCOME: Start with 6 months  
-         const plan = calculatePaymentWithRemainder(debtAmount, 6);
-         const paymentDescription = plan.isEvenSplit 
-           ? `$${plan.basePayment.toFixed(2)} per month for 6 months`
-           : `$${plan.basePayment.toFixed(2)} per month for 5 months, then $${plan.finalPayment.toFixed(2)} for the final payment`;
-         
-         return {
-           monthlyAmount: plan.basePayment,
-           termLength: 6,
-           message: `Based on your income of $${income.toLocaleString()}/month, I can offer ${paymentDescription}. This represents about ${Math.round((plan.basePayment / income) * 100)}% of your monthly income, which is manageable. Does this work? (Total: $${debtAmount.toLocaleString()})`
-         };
-       } else {
-         // LOW INCOME: Start conservative with 8-12 months
-         const termLength = income < 1500 ? 12 : 8;
-         const plan = calculatePaymentWithRemainder(debtAmount, termLength);
-         const paymentDescription = plan.isEvenSplit 
-           ? `$${plan.basePayment.toFixed(2)} per month for ${termLength} months`
-           : `$${plan.basePayment.toFixed(2)} per month for ${termLength - 1} months, then $${plan.finalPayment.toFixed(2)} for the final payment`;
-         
-         return {
-           monthlyAmount: plan.basePayment,
-           termLength,
-           message: `Based on your income of $${income.toLocaleString()}/month, I can offer ${paymentDescription}. This represents about ${Math.round((plan.basePayment / income) * 100)}% of your monthly income. ${termLength > 8 ? 'For this extended plan, we may need recent documentation to verify your financial situation.' : ''} Does this work? (Total: $${debtAmount.toLocaleString()})`
-         };
-       }
-     }
-    
-    // Ask for income if not provided in various scenarios
-    if (!lowerInput.includes('income') && !lowerInput.includes('make') && !lowerInput.includes('earn') && !lowerInput.includes('month')) {
-      if (lowerInput.includes('laid off') || lowerInput.includes('lost job')) {
-        return {
-          monthlyAmount: 0,
-          termLength: 0,
-          message: `I understand you're dealing with job loss - that's really tough. To create the best payment plan for your situation, could you share if you have any current monthly income from unemployment benefits, savings, or other sources? Even a rough estimate helps me recommend something that won't add financial stress.`
-        };
-      } else if (lowerInput.includes('student') || lowerInput.includes('college')) {
-        return {
-          monthlyAmount: 0,
-          termLength: 0,
-          message: `I understand student finances can be tight. To suggest an appropriate payment plan, could you share your approximate monthly income from work, financial aid, or family support? This ensures any plan we create is realistic for your budget.`
-        };
-      }
-      
-      return {
-        monthlyAmount: 0,
-        termLength: 0,
-        message: `I'd like to work with you on a plan that fits your financial situation. Could you share your approximate monthly income? This helps me recommend a payment plan that's typically 10-15% of your monthly income - an amount that won't strain your budget.`
-      };
-    }
-    
-    if (lowerInput.includes('laid off') || lowerInput.includes('lost job') || lowerInput.includes('unemployed')) {
-      const plan = calculatePaymentWithRemainder(debtAmount, 8);
-      const paymentDescription = plan.isEvenSplit 
-        ? `${plan.basePayment.toFixed(2)} per month for 8 months`
-        : `${plan.basePayment.toFixed(2)} per month for 7 months, then ${plan.finalPayment.toFixed(2)} for the final payment`;
-        
-      return {
-        monthlyAmount: plan.basePayment,
-        termLength: 8,
-        message: `I understand you're going through a difficult time with job loss. We want to help. How about ${paymentDescription}? If this is still challenging, please share your current monthly income and we can adjust accordingly. (Total: ${debtAmount.toLocaleString()})`
-      };
-    } else if (lowerInput.includes('too high') || lowerInput.includes('can\'t afford') || lowerInput.includes('too much')) {
-      const plan = calculatePaymentWithRemainder(debtAmount, 10);
-      const paymentDescription = plan.isEvenSplit 
-        ? `${plan.basePayment.toFixed(2)} per month for 10 months`
-        : `${plan.basePayment.toFixed(2)} per month for 9 months, then ${plan.finalPayment.toFixed(2)} for the final payment`;
-        
-      return {
-        monthlyAmount: plan.basePayment,
-        termLength: 10,
-        message: `I completely understand. Let's make this more manageable. How about ${paymentDescription}? If you could share your monthly income, I can suggest an amount that's typically 10-15% of your budget. (Total: ${debtAmount.toLocaleString()})`
-      };
-    } else if (lowerInput.includes('student') || lowerInput.includes('college')) {
-      const plan = calculatePaymentWithRemainder(debtAmount, 12);
-      const paymentDescription = plan.isEvenSplit 
-        ? `${plan.basePayment.toFixed(2)} per month for 12 months`
-        : `${plan.basePayment.toFixed(2)} per month for 11 months, then ${plan.finalPayment.toFixed(2)} for the final payment`;
-        
-      return {
-        monthlyAmount: plan.basePayment,
-        termLength: 12,
-        message: `I understand student finances are challenging. What about ${paymentDescription}? If you could share your monthly income from work or support, I can recommend an amount that fits your student budget better. (Total: ${debtAmount.toLocaleString()})`
-      };
-    } else if (lowerInput.includes('yes') || lowerInput.includes('works') || lowerInput.includes('good') || lowerInput.includes('okay') || lowerInput.includes('fine')) {
-      return null;
-    } else {
-      const plan = calculatePaymentWithRemainder(debtAmount, 6);
-      const paymentDescription = plan.isEvenSplit 
-        ? `${plan.basePayment.toFixed(2)} per month for 6 months`
-        : `${plan.basePayment.toFixed(2)} per month for 5 months, then ${plan.finalPayment.toFixed(2)} for the final payment`;
-        
-      return {
-        monthlyAmount: plan.basePayment,
-        termLength: 6,
-        message: `I'd like to work with you on this. How does ${paymentDescription} sound? To ensure this is comfortable for your budget, could you share your approximate monthly income? I typically recommend debt payments be around 10-15% of monthly income. (Total: ${debtAmount.toLocaleString()})`
-      };
-    }
-  };
-
-  const handlePaymentAgreement = (monthlyAmount: number, termLength: number) => {
-    // Convert to cents to avoid decimal issues in URL
-    const totalDebtCents = Math.round(currentDebt * 100);
-    const monthlyAmountCents = Math.round(monthlyAmount * 100);
-    
-    const paymentUrl = `collectwise.com/payments?termLength=${termLength}&totalDebtAmountCents=${totalDebtCents}&termPaymentAmountCents=${monthlyAmountCents}`;
-    setPaymentPlan({
-      totalDebt: currentDebt,
-      termLength,
-      monthlyPayment: monthlyAmount,
-      frequency: 'monthly'
-    });
-    setNegotiationState('completed');
-    
-    const successMessage = `Perfect! I've set up your payment plan. Here's your secure payment link to get started: ${paymentUrl}`;
-    simulateTyping(successMessage);
   };
 
   const handleSubmit = async (e?: React.FormEvent | React.MouseEvent | React.KeyboardEvent) => {
@@ -232,13 +111,48 @@ const ChatInterface = () => {
     setInputValue('');
 
     if (negotiationState === 'completed') {
-      simulateTyping("You're very welcome! Feel free to reach out if you need any adjustments to your payment plan. Have a wonderful day!");
+      simulateTyping("Thank you! If you need any assistance with your payment plan, please don't hesitate to reach out.");
       return;
     }
 
     setIsTyping(true);
 
     try {
+      // Convert uploaded files to include base64 data
+      const filesWithData = await Promise.all(
+        uploadedFiles.map(async (file) => {
+          if (file.url && !file.base64) {
+            // Convert blob URL to base64
+            const response = await fetch(file.url);
+            const blob = await response.blob();
+            const reader = new FileReader();
+            const base64Promise = new Promise<string>((resolve) => {
+              reader.onloadend = () => {
+                const base64 = reader.result as string;
+                resolve(base64);
+              };
+            });
+            reader.readAsDataURL(blob);
+            const base64 = await base64Promise;
+            
+            return {
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              uploadedAt: file.uploadedAt,
+              dataUrl: base64
+            };
+          }
+          return {
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            uploadedAt: file.uploadedAt,
+            dataUrl: file.base64 || file.url
+          };
+        })
+      );
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -248,6 +162,7 @@ const ChatInterface = () => {
           message: userInput,
           conversationHistory: messages,
           totalDebt: currentDebt,
+          uploadedFiles: [], // Don't send files on regular messages
         }),
       });
 
@@ -260,56 +175,50 @@ const ChatInterface = () => {
       setIsTyping(false);
       addMessage(data.response, 'bot');
 
-             // Check for income information in user input
-       const incomeMatch = userInput.match(/\$?(\d+(?:,\d{3})*(?:\.\d{2})?)[kK]?/);
-       if (incomeMatch && (userInput.toLowerCase().includes('income') || userInput.toLowerCase().includes('make') || userInput.toLowerCase().includes('earn') || userInput.toLowerCase().includes('salary'))) {
+      // Process income information from user input
+      const incomeMatch = userInput.match(/\$?(\d+(?:,\d{3})*(?:\.\d{2})?)[kK]?/);
+      if (incomeMatch && (userInput.toLowerCase().includes('income') || userInput.toLowerCase().includes('make') || userInput.toLowerCase().includes('earn') || userInput.toLowerCase().includes('salary'))) {
          let income = parseInt(incomeMatch[1].replace(/,/g, ''));
          
-         // Handle clear annual indicators
          const isAnnual = userInput.toLowerCase().includes('year') || 
                           userInput.toLowerCase().includes('annual') || 
                           userInput.toLowerCase().includes('salary') ||
-                          userInput.toLowerCase().includes('pretax') ||
-                          userInput.match(/\d+[kK]/); // 150K format
+                          userInput.toLowerCase().includes('pretax');
          
-         // Handle clear monthly indicators
          const isMonthly = userInput.toLowerCase().includes('month') || 
                            userInput.toLowerCase().includes('per month') ||
                            userInput.toLowerCase().includes('monthly');
          
          if (isAnnual) {
-           // Handle K suffix (150K = 150,000)
            if (userInput.match(/\d+[kK]/)) {
              income = income * 1000;
            }
-           income = Math.round(income / 12); // Convert annual to monthly
+           income = Math.round(income / 12);
            setUserIncome(income);
          } else if (isMonthly) {
-           // Already monthly, use as-is
            setUserIncome(income);
-         } else if (income > 8000) {
-           // Ask for clarification on ambiguous high amounts
-           addMessage(`Just to clarify - when you mentioned $${income.toLocaleString()}, did you mean monthly or annual income? This helps me calculate the right payment plan for your budget.`, 'bot');
-           return;
          } else {
-           // Assume monthly for reasonable amounts
-           setUserIncome(income);
+           if (userInput.match(/\d+[kK]/) || income >= 2500) {
+             const displayAmount = userInput.match(/\d+[kK]/) ? `${income}K` : `$${income.toLocaleString()}`;
+             addMessage(`Just to clarify - when you mentioned ${displayAmount}, did you mean monthly or annual income?\n\nThis helps me calculate the right payment plan for your budget.`, 'bot');
+             return;
+           } else {
+             setUserIncome(income);
+           }
          }
-       }
+      }
        
-       // Handle clarification responses (monthly vs annual)
+      // Handle clarification (monthly vs annual)
        if (userInput.toLowerCase().includes('monthly') || userInput.toLowerCase().includes('annual') || userInput.toLowerCase().includes('yearly')) {
          const previousMessage = messages[messages.length - 1];
          if (previousMessage && previousMessage.content.includes('monthly or annual income')) {
-           // Extract the income amount from the previous bot message
            const amountMatch = previousMessage.content.match(/\$(\d+(?:,\d{3})*)/);
            if (amountMatch) {
              let income = parseInt(amountMatch[1].replace(/,/g, ''));
              
              if (userInput.toLowerCase().includes('annual') || userInput.toLowerCase().includes('yearly')) {
-               income = Math.round(income / 12); // Convert annual to monthly
+               income = Math.round(income / 12);
              }
-             // For monthly, use as-is
              
              setUserIncome(income);
            }
@@ -317,34 +226,57 @@ const ChatInterface = () => {
        }
 
       // Check for documentation requirements
-      if (data.response.toLowerCase().includes('documentation') || data.response.toLowerCase().includes('pay stubs') || data.response.toLowerCase().includes('bank statements')) {
+      if (data.response.toLowerCase().includes('documentation') || 
+          data.response.toLowerCase().includes('pay stubs') || 
+          data.response.toLowerCase().includes('bank statements') || 
+          data.response.toLowerCase().includes('verify') || 
+          data.response.toLowerCase().includes('proof') ||
+          data.response.toLowerCase().includes('unemployment benefits') ||
+          data.response.toLowerCase().includes('job search records')) {
         setRequiresDocumentation(true);
+        setIsUploadExpanded(true);
+        setCanUploadMore(true);
       }
 
-      if (data.agreementReached) {
-        // Handle both old and new URL formats
-        const urlMatchCents = data.response.match(/termLength=(\d+)&totalDebtAmountCents=(\d+)&termPaymentAmountCents=(\d+)/);
-        const urlMatchDollars = data.response.match(/termLength=(\d+)&totalDebtAmount=(\d+)&termPaymentAmount=(\d+)/);
-        
-        if (urlMatchCents) {
-          const [, termLength, totalAmountCents, paymentAmountCents] = urlMatchCents;
+      // Check if response contains payment URL (agreement reached)
+      const urlMatch = data.response.match(/collectwise\.com\/payments\?termLength=(\d+)&totalDebtAmount=(\d+(?:\.\d{2})?)&termPaymentAmount=(\d+(?:\.\d{2})?)/);
+      
+      if (urlMatch || data.agreementReached) {
+        if (urlMatch) {
+          const [, termLength, totalAmount, paymentAmount] = urlMatch;
+          const parsedPaymentAmount = parseFloat(paymentAmount);
+          
+          // Calculate payment amount if it's NaN
+          const actualPaymentAmount = isNaN(parsedPaymentAmount) 
+            ? Math.round((currentDebt / parseInt(termLength)) * 100) / 100 
+            : parsedPaymentAmount;
+          
           setPaymentPlan({
-            totalDebt: parseInt(totalAmountCents) / 100, // Convert cents back to dollars
+            totalDebt: parseFloat(totalAmount),
             termLength: parseInt(termLength),
-            monthlyPayment: parseInt(paymentAmountCents) / 100, // Convert cents back to dollars
+            monthlyPayment: actualPaymentAmount,
             frequency: 'monthly'
           });
-          setNegotiationState('completed');
-        } else if (urlMatchDollars) {
-          const [, termLength, totalAmount, paymentAmount] = urlMatchDollars;
-          setPaymentPlan({
-            totalDebt: parseInt(totalAmount),
-            termLength: parseInt(termLength),
-            monthlyPayment: parseInt(paymentAmount),
-            frequency: 'monthly'
-          });
-          setNegotiationState('completed');
+        } else if (data.agreementReached) {
+          // Extract terms from response text if URL match failed
+          const termMatch = data.response.match(/(\d+)\s*months?/i);
+          const paymentMatch = data.response.match(/\$(\d+(?:\.\d{2})?)\s*(?:per|\/)\s*month/i);
+          
+          if (termMatch) {
+            const termLength = parseInt(termMatch[1]);
+            const monthlyPayment = paymentMatch 
+              ? parseFloat(paymentMatch[1]) 
+              : Math.round((currentDebt / termLength) * 100) / 100;
+            
+            setPaymentPlan({
+              totalDebt: currentDebt,
+              termLength: termLength,
+              monthlyPayment: monthlyPayment,
+              frequency: 'monthly'
+            });
+          }
         }
+        setNegotiationState('completed');
       } else {
         setNegotiationState('negotiating');
       }
@@ -352,93 +284,424 @@ const ChatInterface = () => {
     } catch (error) {
       console.error('Chat API Error:', error);
       setIsTyping(false);
-      
-      // Show error state but continue with fallback
       setError('Connection issue - using offline mode');
-      
-      // Fallback to local logic
       setNegotiationState('negotiating');
-      const paymentOption = generatePaymentOptions(currentDebt, userInput);
-      if (paymentOption && paymentOption.monthlyAmount > 0) {
-        simulateTyping(paymentOption.message);
-      } else {
-        simulateTyping("I want to make sure we find a plan that works for your budget. What monthly payment amount would be comfortable for you?");
-      }
+      
+      // Fallback logic for when API is unavailable
+      simulateTyping("I want to make sure we find a plan that works for your budget. What monthly payment amount would be comfortable for you?");
     }
   };
 
   const clearError = () => setError(null);
 
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedUrl(text);
+      setTimeout(() => setCopiedUrl(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  const extractUrlFromMessage = (message: string): string | null => {
+    const urlMatch = message.match(/collectwise\.com\/payments\?[^\s]+/);
+    return urlMatch ? urlMatch[0] : null;
+  };
+
+  const refreshChat = () => {
+    setMessages([]);
+    setInputValue('');
+    setIsTyping(false);
+    setNegotiationState('initial');
+    setPaymentPlan(null);
+    setError(null);
+    setRequiresDocumentation(false);
+    setUserIncome(null);
+    setCopiedUrl(null);
+    setUploadedFiles([]);
+    setIsDragging(false);
+    setIsUploading(false);
+    setIsUploadExpanded(false);
+    setCanUploadMore(false);
+    setIsProcessingDocs(false);
+    
+    // Restart with initial message
+    setTimeout(() => {
+      const initialMessage: Message = {
+        id: '1',
+        content: `Hello! Our records show that you currently owe $${currentDebt.toLocaleString()}. Are you able to resolve this debt today?`,
+        sender: 'bot',
+        timestamp: new Date()
+      };
+      setMessages([initialMessage]);
+    }, 500);
+  };
+
+  const handleFileUpload = async (files: FileList) => {
+    const validFiles = Array.from(files).filter(file => {
+      const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'text/plain', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+      const maxSize = 10 * 1024 * 1024; // 10MB
+      return validTypes.includes(file.type) && file.size <= maxSize;
+    });
+
+    if (validFiles.length === 0) {
+      setError('Please upload valid files (PDF, JPG, PNG, DOC, DOCX, TXT) under 10MB');
+      return;
+    }
+
+    setIsUploading(true);
+    setError(null);
+
+    try {
+      const newFiles: UploadedFile[] = await Promise.all(
+        validFiles.map(async (file) => {
+          // Convert to base64 for image files
+          let base64Data: string | undefined;
+          if (file.type.startsWith('image/')) {
+            const reader = new FileReader();
+            const base64Promise = new Promise<string>((resolve) => {
+              reader.onloadend = () => {
+                resolve(reader.result as string);
+              };
+            });
+            reader.readAsDataURL(file);
+            base64Data = await base64Promise;
+          }
+
+          return {
+            id: Date.now().toString() + Math.random(),
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            uploadedAt: new Date(),
+            url: URL.createObjectURL(file),
+            base64: base64Data
+          };
+        })
+      );
+
+      setUploadedFiles(prev => {
+        const updatedFiles = [...prev, ...newFiles];
+        
+        // Disable further uploads and trigger analysis
+        setCanUploadMore(false);
+        // Auto-collapse upload area after successful upload
+        setIsUploadExpanded(false);
+        setTimeout(() => {
+          handleDocumentAnalysis(updatedFiles);
+        }, 500);
+        
+        return updatedFiles;
+      });
+      
+    } catch (error) {
+      console.error('File upload error:', error);
+      setError('Failed to upload files. Please try again.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDocumentAnalysis = async (files: UploadedFile[]) => {
+    if (isProcessingDocs) return; // Prevent duplicate processing
+    
+    // Additional guard - check if we already processed these files
+    const fileIds = files.map(f => f.id).sort().join(',');
+    if (documentMessages.has(fileIds)) return;
+    
+    setIsProcessingDocs(true);
+    setIsTyping(true);
+    setDocumentMessages(prev => new Set([...prev, fileIds]));
+    
+    try {
+      // Convert files to proper format for API
+      const filesWithData = await Promise.all(
+        files.map(async (file) => {
+          if (file.base64) {
+            return {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              dataUrl: file.base64
+            };
+          } else if (file.url) {
+            const response = await fetch(file.url);
+            const blob = await response.blob();
+            const reader = new FileReader();
+            const base64Promise = new Promise<string>((resolve) => {
+              reader.onloadend = () => {
+                resolve(reader.result as string);
+              };
+            });
+            reader.readAsDataURL(blob);
+            const base64 = await base64Promise;
+            
+            return {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              dataUrl: base64
+            };
+          }
+          return {
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            dataUrl: ''
+          };
+        })
+      );
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: "I've uploaded my documentation. Can you review it and let me know what payment options are available?",
+          conversationHistory: messages,
+          totalDebt: currentDebt,
+          uploadedFiles: filesWithData
+        })
+      });
+
+      const data = await response.json();
+      
+      setIsTyping(false);
+      
+      // Simply add the API response
+      addMessage(data.response, 'bot');
+      
+      // Update documentation status based on approval
+      if (data.documentApproved) {
+        setRequiresDocumentation(false);
+        setCanUploadMore(false);
+      } else {
+        // If documents were rejected, allow another upload attempt
+        setCanUploadMore(true);
+      }
+      
+    } catch (error) {
+      console.error('Error analyzing documents:', error);
+      setIsTyping(false);
+      
+      const fallbackMessage = `I've received your ${files.length} document${files.length > 1 ? 's' : ''}. Based on this information, let me suggest some payment options for your debt of $${currentDebt.toLocaleString()}.`;
+      addMessage(fallbackMessage, 'bot');
+    } finally {
+      setIsProcessingDocs(false);
+    }
+  };
+
+  const removeFile = (fileId: string) => {
+    setUploadedFiles(prev => {
+      const fileToRemove = prev.find(f => f.id === fileId);
+      if (fileToRemove?.url) {
+        URL.revokeObjectURL(fileToRemove.url);
+      }
+      return prev.filter(f => f.id !== fileId);
+    });
+    
+    // Re-enable upload if all files are removed
+    if (uploadedFiles.length === 1) { // Will be 0 after filter
+      setCanUploadMore(true);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && canUploadMore) {
+      handleFileUpload(e.dataTransfer.files);
+    }
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b px-6 py-4">
-        <div className="flex items-center gap-3">
-          <div className="bg-blue-600 p-2 rounded-full">
-            <DollarSign className="w-6 h-6 text-white" />
+      <div className="bg-white/80 backdrop-blur-md shadow-lg border-b border-white/20 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-3 rounded-2xl shadow-lg">
+              <DollarSign className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold bg-gradient-to-r from-gray-900 to-blue-900 bg-clip-text text-transparent">CollectWise Payment Assistant</h1>
+              <p className="text-sm text-gray-600">Let's work together to find a payment solution that works for you</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">CollectWise Payment Assistant</h1>
-            <p className="text-sm text-gray-500">Let's work together to find a payment solution that works for you</p>
-          </div>
+          <button
+            onClick={refreshChat}
+            className="bg-white/50 hover:bg-white/80 border border-gray-200/50 rounded-xl px-4 py-2 flex items-center gap-2 text-gray-600 hover:text-gray-800 transition-all duration-200 backdrop-blur-sm shadow-sm hover:shadow-md"
+            title="Start new conversation"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span className="text-sm font-medium">New Chat</span>
+          </button>
         </div>
       </div>
 
       {/* Error Banner */}
       {error && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex">
-              <AlertCircle className="w-5 h-5 text-yellow-400 mr-2" />
-              <p className="text-sm text-yellow-800">{error}</p>
+        <div className="mx-4 mt-4">
+          <div className="max-w-4xl mx-auto bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200/50 rounded-2xl p-4 shadow-sm backdrop-blur-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex">
+                <AlertCircle className="w-5 h-5 text-yellow-500 mr-2" />
+                <p className="text-sm text-yellow-800">{error}</p>
+              </div>
+              <button
+                onClick={clearError}
+                className="text-yellow-600 hover:text-yellow-800 text-sm underline transition-colors"
+              >
+                Dismiss
+              </button>
             </div>
-            <button
-              onClick={clearError}
-              className="text-yellow-600 hover:text-yellow-800 text-sm underline"
-            >
-              Dismiss
-            </button>
           </div>
         </div>
       )}
 
       {/* Documentation Requirements Banner */}
       {requiresDocumentation && (
-        <div className="mx-4 mb-4">
-          <div className="max-w-4xl mx-auto bg-blue-50 border border-blue-200 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <FileText className="w-5 h-5 text-blue-600" />
-              <h3 className="font-semibold text-blue-800">Documentation Required</h3>
+        <div className="mx-4 mb-2">
+          <div className="max-w-4xl mx-auto bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/50 rounded-xl shadow-sm backdrop-blur-sm">
+            {/* Collapsible Header */}
+            <div 
+              className="flex items-center justify-between p-3 cursor-pointer hover:bg-blue-100/30 transition-colors"
+              onClick={() => setIsUploadExpanded(!isUploadExpanded)}
+            >
+              <div className="flex items-center gap-2">
+                <div className="bg-blue-100 p-1.5 rounded-lg">
+                  <FileText className="w-4 h-4 text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="font-medium text-sm text-blue-900">Documentation Required</h3>
+                  <p className="text-blue-700 text-xs">
+                    {uploadedFiles.length > 0 
+                      ? `${uploadedFiles.length} document(s) uploaded` 
+                      : 'Upload for extended payment terms'
+                    }
+                  </p>
+                </div>
+              </div>
+              {isUploadExpanded ? (
+                <ChevronUp className="w-4 h-4 text-blue-600" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-blue-600" />
+              )}
             </div>
-            <p className="text-sm text-blue-700">
-              For extended payment plans or reduced payments, we need to verify your financial situation with recent documentation such as pay stubs, unemployment benefits statements, or bank statements.
-            </p>
+
+            {/* Expandable Upload Description - More compact */}
+            {isUploadExpanded && (
+              <div className="px-3 pb-3 border-t border-blue-200">
+                <p className="text-xs text-blue-700 leading-relaxed mt-2">
+                  Valid documents: unemployment benefits • termination letters • medical bills ($500+) • reduced income statements
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Income Assessment Display */}
-      {userIncome && !paymentPlan && (
-        <div className="mx-4 mb-4">
-          <div className="max-w-4xl mx-auto bg-indigo-50 border border-indigo-200 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <DollarSign className="w-5 h-5 text-indigo-600" />
-              <h3 className="font-semibold text-indigo-800">Financial Assessment</h3>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-              <div className="text-indigo-700">
-                <p className="font-medium">Monthly Income</p>
-                <p className="text-lg font-semibold">${userIncome.toLocaleString()}</p>
+      {/* File Upload Section - More compact */}
+      {((requiresDocumentation && isUploadExpanded && canUploadMore) || (uploadedFiles.length > 0 && isUploadExpanded)) && (
+        <div className="mx-4 mb-2">
+          <div className="max-w-4xl mx-auto">
+            {/* File Upload Area - Compact design */}
+            {canUploadMore && (
+              <div 
+                className={`border-2 border-dashed rounded-xl p-4 transition-all duration-200 ${
+                  isDragging 
+                    ? 'border-blue-400 bg-blue-50/50' 
+                    : 'border-gray-300/50 bg-white/30'
+                } backdrop-blur-sm hover:border-blue-400/50 hover:bg-blue-50/30`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <h3 className="text-sm font-medium text-gray-900">Upload Documentation</h3>
+                    <p className="text-xs text-gray-600 mt-1">
+                      Drag and drop or click to browse • PDF, JPG, PNG (Max 10MB)
+                    </p>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.txt"
+                    onChange={(e) => e.target.files && handleFileUpload(e.target.files)}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-2 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all duration-200 font-medium text-sm shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isUploading ? (
+                      <span className="flex items-center gap-2">
+                        <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                        Uploading...
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <Paperclip className="w-3 h-3" />
+                        Choose Files
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
-                             <div className="text-indigo-700">
-                 <p className="font-medium">Recommended Payment Range</p>
-                 <p className="text-lg font-semibold">${(userIncome * 0.10).toFixed(2)} - ${(userIncome * 0.20).toFixed(2)}</p>
-               </div>
-               <div className="text-indigo-700">
-                 <p className="font-medium">Debt-to-Income Impact</p>
-                 <p className="text-lg font-semibold">{((userIncome * 0.15) / userIncome * 100).toFixed(1)}% of income</p>
-               </div>
-            </div>
+            )}
+
+            {/* Uploaded Files List - Compact */}
+            {uploadedFiles.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <h4 className="text-xs font-medium text-gray-700">Uploaded Documents</h4>
+                {uploadedFiles.map((file) => (
+                  <div
+                    key={file.id}
+                    className="flex items-center justify-between bg-white/60 backdrop-blur-sm border border-gray-200/50 rounded-lg p-2 shadow-sm"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="bg-green-100 p-1 rounded">
+                        <FileText className="w-3 h-3 text-green-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-gray-900">{file.name}</p>
+                        <p className="text-xs text-gray-500">
+                          {formatFileSize(file.size)} • {file.uploadedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => removeFile(file.id)}
+                      className="text-gray-400 hover:text-red-500 transition-colors p-1 rounded hover:bg-red-50"
+                      title="Remove file"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -446,47 +709,74 @@ const ChatInterface = () => {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="max-w-4xl mx-auto space-y-4">
-          {messages.map((message) => (
-            <div
-              key={message.id}
-              className={`flex gap-3 ${message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'} message-enter`}
-            >
-              <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
-                message.sender === 'bot' 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-600 text-white'
-              }`}>
-                {message.sender === 'bot' ? <Bot className="w-5 h-5" /> : <User className="w-5 h-5" />}
-              </div>
-              <div className={`flex flex-col max-w-xs sm:max-w-md lg:max-w-lg ${
-                message.sender === 'user' ? 'items-end' : 'items-start'
-              }`}>
-                <div className={`rounded-2xl px-4 py-3 ${
-                  message.sender === 'bot'
-                    ? message.isError 
-                      ? 'bg-red-100 text-red-800 border border-red-200'
-                      : 'bg-white text-gray-800 shadow-sm border border-gray-100'
-                    : 'bg-blue-600 text-white shadow-sm'
+          {messages.map((message) => {
+            const paymentUrl = extractUrlFromMessage(message.content);
+            // Fix payment URL if it contains NaN
+            const fixedUrl = paymentUrl && paymentUrl.includes('NaN') 
+              ? paymentUrl.replace(/termPaymentAmount=NaN/, `termPaymentAmount=${paymentPlan ? paymentPlan.monthlyPayment : Math.round((currentDebt / 12) * 100) / 100}`)
+              : paymentUrl;
+            
+            return (
+              <div
+                key={message.id}
+                className={`flex gap-3 ${message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'} message-enter`}
+              >
+                <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center shadow-md ${
+                  message.sender === 'bot' 
+                    ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white' 
+                    : 'bg-gradient-to-br from-gray-600 to-gray-700 text-white'
                 }`}>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                  {message.sender === 'bot' ? <Bot className="w-5 h-5" /> : <User className="w-5 h-5" />}
                 </div>
-                <span className="text-xs text-gray-500 mt-1">
-                  {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
+                <div className={`flex ${message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'} items-start gap-2 max-w-xs sm:max-w-md lg:max-w-lg`}>
+                  <div className={`flex flex-col ${
+                    message.sender === 'user' ? 'items-end' : 'items-start'
+                  }`}>
+                    <div className={`rounded-2xl px-4 py-3 shadow-lg backdrop-blur-sm relative ${
+                      message.sender === 'bot'
+                        ? message.isError 
+                          ? 'bg-gradient-to-r from-red-50 to-red-100 text-red-800 border border-red-200/50'
+                          : 'bg-white/90 text-gray-800 border border-gray-200/50'
+                        : 'bg-gradient-to-r from-blue-600 to-blue-700 text-white'
+                    }`}>
+                      <p 
+                        className="text-sm leading-relaxed whitespace-pre-wrap"
+                        dangerouslySetInnerHTML={{
+                          __html: message.content
+                            .replace(/\[?(collectwise\.com\/payments\?[^\s\]]+)\]?/g, '<strong style="background: linear-gradient(to right, #3b82f6, #1d4ed8); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; font-weight: 600;">$1</strong>')
+                            .replace(/(\$[\d,]+(?:\.\d{2})?)/g, '<strong>$1</strong>')
+                            .replace(/(Perfect!|Great!|Excellent!)/g, '<strong>$1</strong>')
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500 mt-1">
+                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  {fixedUrl && message.sender === 'bot' && (
+                    <button
+                      onClick={() => window.open(`https://${fixedUrl}`, '_blank', 'noopener,noreferrer')}
+                      className="flex-shrink-0 p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all duration-200 group self-center"
+                      title="Open payment link"
+                    >
+                      <ExternalLink className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           
           {isTyping && (
             <div className="flex gap-3 message-enter">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-blue-600 to-blue-700 text-white flex items-center justify-center shadow-md">
                 <Bot className="w-5 h-5" />
               </div>
-              <div className="bg-white rounded-2xl px-4 py-3 shadow-sm border border-gray-100">
+              <div className="bg-white/90 rounded-2xl px-4 py-3 shadow-lg border border-gray-200/50 backdrop-blur-sm">
                 <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                 </div>
               </div>
             </div>
@@ -499,58 +789,56 @@ const ChatInterface = () => {
       {/* Payment Plan Summary */}
       {paymentPlan && (
         <div className="mx-4 mb-4">
-          <div className="max-w-4xl mx-auto bg-green-50 border border-green-200 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <CheckCircle className="w-5 h-5 text-green-600" />
-              <h3 className="font-semibold text-green-800">Payment Plan Confirmed</h3>
+          <div className="max-w-4xl mx-auto bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200/50 rounded-2xl p-5 shadow-lg backdrop-blur-sm">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="bg-green-100 p-2 rounded-xl">
+                <CheckCircle className="w-5 h-5 text-green-600" />
+              </div>
+              <h3 className="font-semibold text-green-900">Payment Plan Confirmed</h3>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-              <div className="text-green-700">
-                <p className="font-medium">Total Debt</p>
-                <p className="text-lg font-semibold">${paymentPlan.totalDebt.toLocaleString()}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 text-sm">
+              <div className="text-green-700 bg-white/50 rounded-xl p-4">
+                <p className="font-medium text-green-600">Total Debt</p>
+                <p className="text-xl font-semibold text-green-900">${paymentPlan.totalDebt.toLocaleString()}</p>
               </div>
-              <div className="text-green-700">
-                <p className="font-medium">Monthly Payment</p>
-                <p className="text-lg font-semibold">${paymentPlan.monthlyPayment.toFixed(2)}</p>
+              <div className="text-green-700 bg-white/50 rounded-xl p-4">
+                <p className="font-medium text-green-600">Monthly Payment</p>
+                <p className="text-xl font-semibold text-green-900">
+                  ${isNaN(paymentPlan.monthlyPayment) 
+                    ? (paymentPlan.totalDebt / paymentPlan.termLength).toFixed(2) 
+                    : paymentPlan.monthlyPayment.toFixed(2)}
+                </p>
               </div>
-              <div className="text-green-700">
-                <p className="font-medium">Payment Term</p>
-                <p className="text-lg font-semibold">{paymentPlan.termLength} months</p>
+              <div className="text-green-700 bg-white/50 rounded-xl p-4">
+                <p className="font-medium text-green-600">Payment Term</p>
+                <p className="text-xl font-semibold text-green-900">{paymentPlan.termLength} months</p>
               </div>
             </div>
-                         {userIncome && (
-               <div className="mt-3 pt-3 border-t border-green-200">
-                 <p className="text-xs text-green-600">
-                   This represents {((paymentPlan.monthlyPayment / userIncome) * 100).toFixed(1)}% of your monthly income
-                 </p>
-               </div>
-             )}
           </div>
         </div>
       )}
 
       {/* Input */}
-      <div className="bg-white border-t px-4 py-4">
+      <div className="bg-white/80 backdrop-blur-md border-t border-white/20 px-4 py-4 shadow-lg">
         <div className="max-w-4xl mx-auto">
-          <div className="flex gap-2">
+          <div className="flex gap-3">
             <input
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSubmit(e)}
+              onKeyPress={(e) => e.key === 'Enter' && !isTyping && !isProcessingDocs && handleSubmit(e)}
               placeholder="Type your message..."
-              disabled={isTyping}
-              className="flex-1 border border-gray-300 rounded-xl px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed transition-all"
+              className="flex-1 border border-gray-300/50 rounded-2xl px-6 py-4 text-gray-900 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all duration-200 bg-white/90 backdrop-blur-sm shadow-sm"
             />
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || isTyping}
-              className="bg-blue-600 text-white rounded-xl px-6 py-3 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-medium"
+              disabled={!inputValue.trim() || isTyping || isProcessingDocs}
+              className="bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-2xl px-6 py-4 hover:from-blue-700 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 font-medium shadow-lg hover:shadow-xl transform hover:scale-105"
             >
               <Send className="w-5 h-5" />
             </button>
           </div>
-          <p className="text-xs text-gray-500 mt-2 text-center">
+          <p className="text-xs text-gray-600 mt-3 text-center">
             Press Enter to send • Your information is secure and confidential
           </p>
         </div>
