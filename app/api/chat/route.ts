@@ -44,12 +44,12 @@ CONVERSATION FLOW:
 4. Be responsive to their actual questions and statements
 
 NEGOTIATION STRATEGY:
-- START with shortest viable term that keeps payments within 20% of income
-- For $1000 income: Start with 8-9 months ($300-$267), only offer longer when they negotiate
+- ALWAYS allow shorter terms (1-8 months) - users should be encouraged to pay faster
+- For $1000 income: Start with 8-9 months, but accept ANY shorter term without question
 - Maximum 12 months WITHOUT documentation
 - Maximum 24 months ONLY with proper documentation of hardship
 - Before offering terms over 12 months, REQUIRE documentation
-- Progression: 8-9 months → 10-12 months → 13-24 months (ONLY with documentation)
+- Progression: ANY short term (1-8) → 9-12 months → 13-24 months (ONLY with documentation)
 
 COMMUNICATION STYLE:
 - Be warm, understanding, and genuinely empathetic
@@ -76,16 +76,19 @@ SCOPE LIMITATIONS:
 
 PAYMENT LINK FORMAT:
 - ALWAYS use exactly this format when agreement is reached:
-  collectwise.com/payments?termLength={months}&totalDebtAmount=${totalDebt}&termPaymentAmount={monthlyAmount}
+  collectwise.com/payments?termLength={months}&totalDebtAmount={totalDebt}&termPaymentAmount={cents}&finalPaymentAmount={finalCents}
+- termPaymentAmount and finalPaymentAmount must be in CENTS (multiply dollars by 100)
+- For 7 months: termPaymentAmount=34285&finalPaymentAmount=34290 (not 34286)
 - Include "Here's your secure payment link to get started:" before the URL
-- Make sure to calculate the exact monthly payment amount
+- NEVER use decimal amounts in URLs
 
 PAYMENT CALCULATION RULES:
-- ALWAYS verify calculations are accurate before responding
-- NEVER offer terms longer than 12 months WITHOUT documentation
-- Maximum 24-36 months ONLY with proper hardship documentation
-- Target 10-20% of monthly income for payments
-- If debt doesn't divide evenly, round to nearest cent and note final payment adjustment
+- CRITICAL: For imperfect divisions (like $2400/7 months), NEVER use simple division
+- ALWAYS use this method: Base payment = floor(debt/months), Final payment = remaining amount
+- Example: 7 months = $342.85 × 6 months + $342.90 final month = $2400 exactly
+- NEVER say "$342.86 per month" for 7 months (that totals $2401, not $2400)
+- ALWAYS show breakdown: "Monthly Payment: $X.XX × N months, Final Payment: $Y.YY"
+- Maximum 12 months WITHOUT documentation, 24 months WITH documentation
 - REJECT any user requests for terms over 12 months without documentation
 
 Current debt: $${totalDebt}
@@ -121,55 +124,75 @@ ${documentAnalysis ? `\nDOCUMENT ANALYSIS: ${documentAnalysis}` : ''}`;
 
     const completion = await Promise.race([apiCall, apiTimeout]) as any;
 
-    let response = completion.choices?.[0]?.message?.content || "I'm sorry, I'm having trouble processing that. Could you please try again?";
+          let response = completion.choices?.[0]?.message?.content || "I'm sorry, I'm having trouble processing that. Could you please try again?";
 
-    // Fix payment URL format if it exists but is malformed
-    const urlRegex = /collectwise\.com\/payments\?[^\s]*/g;
-    const urlMatch = response.match(urlRegex);
-    
-    if (urlMatch) {
-      // Extract parameters from the URL if they exist
-      const termMatch = response.match(/termLength=(\d+)/);
-      const monthlyMatch = response.match(/termPaymentAmount=([\d.]+|NaN)/);
-      
-      if (termMatch) {
-        const termLength = parseInt(termMatch[1]);
-        let monthlyPayment: number;
-        
-        // Check if payment amount is NaN or missing
-        if (!monthlyMatch || monthlyMatch[1] === 'NaN' || isNaN(parseFloat(monthlyMatch[1]))) {
-          // Calculate the correct monthly payment
-          monthlyPayment = Math.round((totalDebt / termLength) * 100) / 100;
-        } else {
-          monthlyPayment = parseFloat(monthlyMatch[1]);
-        }
-        
-        // Ensure URL has correct format with valid payment amount
-        const correctUrl = `collectwise.com/payments?termLength=${termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${monthlyPayment}`;
-        response = response.replace(urlRegex, correctUrl);
+      // If this is a document analysis request, use the analysis result instead
+      if (documentAnalysis && (message.toLowerCase().includes('uploaded') || message.toLowerCase().includes('documentation') || message.toLowerCase().includes('review'))) {
+        response = documentAnalysis;
       }
-    }
+
+      // Fix payment URL format if it exists but is malformed
+      const urlRegex = /collectwise\.com\/payments\?[^\s]*/g;
+      const urlMatch = response.match(urlRegex);
+      
+      if (urlMatch) {
+        // Extract parameters from the URL if they exist
+        const termMatch = response.match(/termLength=(\d+)/);
+        const monthlyMatch = response.match(/termPaymentAmount=([\d.]+|NaN)/);
+        
+        if (termMatch) {
+          const termLength = parseInt(termMatch[1]);
+          let monthlyPayment: number;
+          
+          // ALWAYS recalculate with our bulletproof method
+          const exactPayment = totalDebt / termLength;
+          const basePayment = Math.floor(exactPayment * 100) / 100;
+          const finalPayment = totalDebt - (basePayment * (termLength - 1));
+          const hasVariation = Math.abs(finalPayment - basePayment) > 0.01;
+          
+          // Ensure URL has correct format with cents (no decimals)
+          const correctUrl = hasVariation 
+            ? `collectwise.com/payments?termLength=${termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(basePayment * 100)}&finalPaymentAmount=${Math.round(finalPayment * 100)}`
+            : `collectwise.com/payments?termLength=${termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(basePayment * 100)}&finalPaymentAmount=${Math.round(basePayment * 100)}`;
+          
+          // Also fix the response text if it has incorrect calculations
+          if (hasVariation) {
+            // Replace any mention of simple division with proper breakdown
+            response = response.replace(/\$[\d,]+\.?\d* per month/g, `$${basePayment.toFixed(2)} per month for ${termLength - 1} months, then $${finalPayment.toFixed(2)} for the final month`);
+            response = response.replace(/\$[\d,]+\.?\d* ÷ \d+ = \$[\d,]+\.?\d* per month/g, `Payment breakdown: $${basePayment.toFixed(2)} × ${termLength - 1} months + $${finalPayment.toFixed(2)} final = $${totalDebt.toFixed(2)}`);
+          }
+          
+          response = response.replace(urlRegex, correctUrl);
+        }
+      }
 
     // Check if response contains payment URL (agreement reached)
     const hasPaymentURL = response.includes('collectwise.com/payments');
     
     return NextResponse.json({ 
       response,
-      agreementReached: hasPaymentURL,
-      documentApproved
+        agreementReached: hasPaymentURL,
+        documentApproved
     });
 
   } catch (error) {
     console.error('Chat API error:', error);
     
     // Use the already-read request data for fallback
-    const fallbackResponse = generateFallbackResponse(message, totalDebt, uploadedFiles);
+    // If we have document analysis, prioritize that over generic fallback
+    let fallbackResponse;
+    if (documentAnalysis && (message.toLowerCase().includes('uploaded') || message.toLowerCase().includes('documentation') || message.toLowerCase().includes('review'))) {
+      fallbackResponse = documentAnalysis;
+    } else {
+      fallbackResponse = generateFallbackResponse(message, totalDebt, uploadedFiles);
+    }
     
     const hasPaymentURL = fallbackResponse.includes('collectwise.com/payments');
     
     return NextResponse.json({ 
       response: fallbackResponse,
       agreementReached: hasPaymentURL,
+      documentApproved,
       paymentUrl: hasPaymentURL ? fallbackResponse.match(/https:\/\/collectwise\.com\/payments\?[^\s]+/)?.[0] : null
     });
   }
@@ -245,19 +268,19 @@ Be very strict - only approve documents that clearly demonstrate financial hards
     
     const isApproved = analysis.toUpperCase().startsWith('APPROVED');
     
-    if (isApproved) {
-      const hardshipType = analysis.match(/APPROVED:\s*(.+)/i)?.[1] || "financial hardship";
-      return {
-        message: `Documents verify ${hardshipType.trim()}. Extended payment terms up to 24 months are now authorized.`,
-        approved: true
-      };
-    } else {
-      const documentType = analysis.match(/REJECTED:\s*(.+)/i)?.[1] || "document";
-      return {
-        message: `The uploaded ${documentType.toLowerCase()} does not demonstrate qualifying financial hardship. Payment terms remain limited to 12 months maximum without valid hardship documentation.`,
-        approved: false
-      };
-    }
+         if (isApproved) {
+       const hardshipType = analysis.match(/APPROVED:\s*(.+)/i)?.[1] || "financial hardship";
+       return {
+         message: `Thank you for providing documentation.\n\nAfter reviewing your documents, I can confirm they verify ${hardshipType.trim()}. Based on this verified hardship, I can now offer extended payment terms up to 24 months.\n\nLet me suggest some options:\n- 18 months: $133 per month\n- 20 months: $120 per month  \n- 24 months: $100 per month\n\nWhich option works best for your budget?`,
+         approved: true
+       };
+     } else {
+       const documentType = analysis.match(/REJECTED:\s*(.+)/i)?.[1] || "document";
+       return {
+         message: `Thank you for uploading your documentation.\n\nAfter reviewing your ${documentType.toLowerCase()}, it doesn't demonstrate the type of financial hardship that qualifies for extended terms beyond 12 months.\n\nHowever, I can still offer these standard options:\n- 8 months: $300 per month\n- 10 months: $240 per month\n- 12 months: $200 per month\n\nWhich payment plan works for your budget?`,
+         approved: false
+       };
+     }
 
   } catch (error) {
     console.error('Document analysis error:', error);
@@ -272,23 +295,42 @@ function generateFallbackResponse(userMessage: string, totalDebt: number, upload
   const lowerMessage = userMessage.toLowerCase();
   const hasDocumentation = uploadedFiles && uploadedFiles.length > 0;
   
-  // Helper function to calculate payments with proper validation
+  // Helper function to calculate payments with bulletproof math
   const calculatePayment = (termLength: number) => {
     const exactPayment = totalDebt / termLength;
-    const roundedPayment = Math.round(exactPayment * 100) / 100; // Round to nearest cent
-    const totalWithRounded = roundedPayment * termLength;
-    const difference = Math.abs(totalWithRounded - totalDebt);
+    let basePayment = Math.floor(exactPayment * 100) / 100; // Round DOWN to avoid overage
+    let finalPayment = totalDebt - (basePayment * (termLength - 1));
     
-    // If difference is significant, note that payments may vary slightly
-    const hasVariation = difference > 0.01;
+    // Ensure final payment is reasonable (not negative or too large)
+    if (finalPayment < 0 || finalPayment > basePayment * 2) {
+      // If final payment is problematic, use simple rounding
+      basePayment = Math.round(exactPayment * 100) / 100;
+      finalPayment = basePayment;
+    }
+    
+    const hasVariation = Math.abs(finalPayment - basePayment) > 0.01;
+    
+    // ALWAYS validate the math
+    const calculatedTotal = hasVariation 
+      ? (basePayment * (termLength - 1)) + finalPayment
+      : basePayment * termLength;
+    
+    // Log any discrepancies for debugging
+    if (Math.abs(calculatedTotal - totalDebt) > 0.005) {
+      console.error(`Math error: ${calculatedTotal} !== ${totalDebt} for ${termLength} months`);
+    }
     
     return {
-      amount: roundedPayment,
+      amount: basePayment,
+      finalPayment: finalPayment,
       termLength,
       hasVariation,
       description: hasVariation 
-        ? `$${roundedPayment.toFixed(2)} per month for ${termLength} months (final payment may vary slightly to cover the exact total)`
-        : `$${roundedPayment.toFixed(2)} per month for ${termLength} months`
+        ? `$${basePayment.toFixed(2)} per month for ${termLength - 1} months, then $${finalPayment.toFixed(2)} for the final month`
+        : `$${basePayment.toFixed(2)} per month for ${termLength} months`,
+      breakdown: hasVariation
+        ? `\n\nPayment Breakdown:\n- Monthly Payment: $${basePayment.toFixed(2)} × ${termLength - 1} months = $${(basePayment * (termLength - 1)).toFixed(2)}\n- Final Payment: $${finalPayment.toFixed(2)} × 1 month = $${finalPayment.toFixed(2)}\n- Total: $${totalDebt.toFixed(2)}`
+        : `\n\nPayment Breakdown:\n- Monthly Payment: $${basePayment.toFixed(2)} × ${termLength} months = $${totalDebt.toFixed(2)}\n- Total: $${totalDebt.toFixed(2)}`
     };
   };
   
@@ -299,7 +341,8 @@ function generateFallbackResponse(userMessage: string, totalDebt: number, upload
   if (lowerMessage.includes('yes') || lowerMessage.includes('works') || lowerMessage.includes('good') || lowerMessage.includes('sure')) {
     // Use reasonable fallback based on documentation status
     const payment = calculatePayment(hasDocumentation ? 18 : 12);
-    return `Perfect! ${docAcknowledgment}I'm glad we found something that works for you.\n\nHere's your secure payment link to get started:\ncollectwise.com/payments?termLength=${payment.termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${payment.amount}`;
+    const linkPaymentAmount = payment.hasVariation ? payment.amount : payment.amount;
+    return `Perfect! ${docAcknowledgment}I'm glad we found something that works for you.\n\nFor a ${payment.termLength}-month payment plan on a debt of $${totalDebt.toFixed(2)}, here's the breakdown:\n\n${payment.description}${payment.breakdown}\n\nHere's your secure payment link to get started:\ncollectwise.com/payments?termLength=${payment.termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(linkPaymentAmount * 100)}&finalPaymentAmount=${payment.hasVariation ? Math.round(payment.finalPayment * 100) : Math.round(linkPaymentAmount * 100)}`;
   }
   
   if (lowerMessage.includes('laid off') || lowerMessage.includes('lost job') || lowerMessage.includes('unemployed')) {
@@ -316,6 +359,47 @@ function generateFallbackResponse(userMessage: string, totalDebt: number, upload
     } else {
       const payment = calculatePayment(18);
       return `I completely understand that affordability is important.\n\n${docAcknowledgment}Based on your documentation, I can offer: ${payment.description}.\n\nWould this work better for your budget?`;
+    }
+  }
+  
+  // Handle specific term requests
+  if (lowerMessage.includes('month') && userMessage.match(/\d+/)) {
+    const suggestedMonths = parseInt(userMessage.match(/\d+/)![0]);
+    
+    // ALWAYS allow ANY shorter terms (user wants to pay faster)
+    if (suggestedMonths >= 1 && suggestedMonths <= 24) {
+      // For short terms (1-8), always approve immediately
+      if (suggestedMonths <= 8) {
+        const payment = calculatePayment(suggestedMonths);
+        const linkPaymentAmount = payment.hasVariation ? payment.amount : payment.amount;
+        return `Excellent! I appreciate you wanting to resolve this quickly.\n\n${docAcknowledgment}For a ${payment.termLength}-month payment plan on a debt of $${totalDebt.toFixed(2)}, here's the breakdown:\n\n${payment.description}${payment.breakdown}\n\nHere's your secure payment link to get started:\ncollectwise.com/payments?termLength=${payment.termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(linkPaymentAmount * 100)}&finalPaymentAmount=${payment.hasVariation ? Math.round(payment.finalPayment * 100) : Math.round(linkPaymentAmount * 100)}`;
+      }
+      
+      // For medium terms (9-12), check if it's reasonable
+      if (suggestedMonths <= 12) {
+        const payment = calculatePayment(suggestedMonths);
+        const linkPaymentAmount = payment.hasVariation ? payment.amount : payment.amount;
+        return `I can work with that plan.\n\n${docAcknowledgment}For a ${payment.termLength}-month payment plan on a debt of $${totalDebt.toFixed(2)}, here's the breakdown:\n\n${payment.description}${payment.breakdown}\n\nHere's your secure payment link to get started:\ncollectwise.com/payments?termLength=${payment.termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(linkPaymentAmount * 100)}&finalPaymentAmount=${payment.hasVariation ? Math.round(payment.finalPayment * 100) : Math.round(linkPaymentAmount * 100)}`;
+      }
+      
+      // For longer terms (13-24), require documentation
+      if (suggestedMonths > 12 && !hasDocumentation) {
+        const counterPayment = calculatePayment(12);
+        return `I understand you'd prefer lower payments, but ${suggestedMonths} months would require documentation of financial hardship.\n\n${docAcknowledgment}Without documentation, the maximum term I can offer is ${counterPayment.description}.\n\nIf you're experiencing job loss, medical expenses, or other hardship, please upload supporting documentation for longer terms.`;
+      }
+      
+      // With documentation, allow up to 24 months
+      if (suggestedMonths <= 24 && hasDocumentation) {
+        const payment = calculatePayment(suggestedMonths);
+        const linkPaymentAmount = payment.hasVariation ? payment.amount : payment.amount;
+        return `I can work with that plan.\n\n${docAcknowledgment}For a ${payment.termLength}-month payment plan on a debt of $${totalDebt.toFixed(2)}, here's the breakdown:\n\n${payment.description}${payment.breakdown}\n\nHere's your secure payment link to get started:\ncollectwise.com/payments?termLength=${payment.termLength}&totalDebtAmount=${totalDebt}&termPaymentAmount=${Math.round(linkPaymentAmount * 100)}&finalPaymentAmount=${payment.hasVariation ? Math.round(payment.finalPayment * 100) : Math.round(linkPaymentAmount * 100)}`;
+      }
+    }
+    
+    // Handle extreme cases
+    if (suggestedMonths > 24) {
+      const counterPayment = calculatePayment(hasDocumentation ? 24 : 12);
+      return `I understand you'd prefer lower payments, but ${suggestedMonths} months is beyond what we can offer.\n\n${docAcknowledgment}The maximum term I can offer is ${counterPayment.description}.\n\nWould this work for you?`;
     }
   }
   

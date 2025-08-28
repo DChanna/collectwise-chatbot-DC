@@ -81,11 +81,17 @@ const ChatInterface = () => {
     };
     setMessages(prev => {
       // Prevent duplicate bot messages about documents
-      if (sender === 'bot' && content.toLowerCase().includes('documents did not demonstrate')) {
+      if (sender === 'bot' && (
+        content.toLowerCase().includes('documents do not demonstrate') ||
+        content.toLowerCase().includes('documents did not demonstrate') ||
+        content.toLowerCase().includes('documentation') && content.toLowerCase().includes('qualify')
+      )) {
         const hasSimilar = prev.some(msg => 
           msg.sender === 'bot' && 
-          msg.content.toLowerCase().includes('documents did not demonstrate') &&
-          Date.now() - msg.timestamp.getTime() < 5000 // Within 5 seconds
+          (msg.content.toLowerCase().includes('documents do not demonstrate') ||
+           msg.content.toLowerCase().includes('documents did not demonstrate') ||
+           (msg.content.toLowerCase().includes('documentation') && msg.content.toLowerCase().includes('qualify'))) &&
+          Date.now() - msg.timestamp.getTime() < 10000 // Within 10 seconds
         );
         if (hasSimilar) return prev;
       }
@@ -246,10 +252,10 @@ const ChatInterface = () => {
           const [, termLength, totalAmount, paymentAmount] = urlMatch;
           const parsedPaymentAmount = parseFloat(paymentAmount);
           
-          // Calculate payment amount if it's NaN
+          // Convert cents to dollars and calculate payment amount if it's NaN
           const actualPaymentAmount = isNaN(parsedPaymentAmount) 
             ? Math.round((currentDebt / parseInt(termLength)) * 100) / 100 
-            : parsedPaymentAmount;
+            : parsedPaymentAmount / 100; // Convert cents to dollars
           
           setPaymentPlan({
             totalDebt: parseFloat(totalAmount),
@@ -468,21 +474,37 @@ const ChatInterface = () => {
         })
       });
 
-      const data = await response.json();
-      
-      setIsTyping(false);
-      
-      // Simply add the API response
-      addMessage(data.response, 'bot');
-      
-      // Update documentation status based on approval
-      if (data.documentApproved) {
-        setRequiresDocumentation(false);
-        setCanUploadMore(false);
-      } else {
-        // If documents were rejected, allow another upload attempt
-        setCanUploadMore(true);
-      }
+             const data = await response.json();
+       
+       setIsTyping(false);
+       
+       // Add the API response with the document analysis
+       addMessage(data.response, 'bot');
+       
+       // Update documentation status and state based on approval
+       if (data.documentApproved) {
+         setRequiresDocumentation(false);
+         setCanUploadMore(false);
+         // Note: Don't collapse here, let user see the approval message
+       } else {
+         // If documents were rejected, allow another upload attempt
+         setCanUploadMore(true);
+         setIsUploadExpanded(true); // Re-expand for new uploads
+       }
+       
+       // Check if the response contains a payment URL (immediate agreement)
+       const urlMatch = data.response.match(/collectwise\.com\/payments\?termLength=(\d+)&totalDebtAmount=(\d+(?:\.\d{2})?)&termPaymentAmount=(\d+(?:\.\d{2})?)/);
+       
+       if (urlMatch) {
+         const [, termLength, totalAmount, paymentAmount] = urlMatch;
+         setPaymentPlan({
+           totalDebt: parseFloat(totalAmount),
+           termLength: parseInt(termLength),
+           monthlyPayment: parseFloat(paymentAmount) / 100, // Convert cents to dollars
+           frequency: 'monthly'
+         });
+         setNegotiationState('completed');
+       }
       
     } catch (error) {
       console.error('Error analyzing documents:', error);
