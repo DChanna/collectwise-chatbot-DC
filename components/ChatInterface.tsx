@@ -412,7 +412,11 @@ const ChatInterface = () => {
     
     setIsProcessingDocs(true);
     setIsTyping(true);
-    setDocumentMessages(prev => new Set([...prev, fileIds]));
+         setDocumentMessages(prev => {
+       const newSet = new Set(prev);
+       newSet.add(fileIds);
+       return newSet;
+     });
     
     try {
       // Convert files to proper format for API
