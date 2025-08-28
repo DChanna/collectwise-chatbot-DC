@@ -47,8 +47,10 @@ CONVERSATION FLOW:
 
 NEGOTIATION STRATEGY:
 - ALWAYS allow shorter terms (1-8 months) - users should be encouraged to pay faster
-- For $1000 income: Start with specific options like "8 months at $300/month" or "9 months at $267/month"
+- ONLY offer the 2 MOST EFFICIENT options first (shortest reasonable terms for their income)
+- For $1000 income: Start with ONLY "8 months at $300/month" and "9 months at $266.66/month" (use exact floor method amounts)
 - NEVER suggest term lengths without showing actual payment amounts
+- CRITICAL: When showing breakdowns, use correct format: "$300 × 7 months + $300 final = $2400" for 8-month plan
 - Maximum 12 months WITHOUT documentation
 - Maximum 24 months ONLY with proper documentation of hardship
 - Before offering terms over 12 months, REQUIRE documentation
@@ -89,9 +91,14 @@ PAYMENT LINK FORMAT:
 PAYMENT CALCULATION RULES:
 - CRITICAL: For imperfect divisions (like $2400/7 months), NEVER use simple division
 - ALWAYS use this method: Base payment = floor(debt/months), Final payment = remaining amount
-- Example: 7 months = $342.85 × 6 months + $342.90 final month = $2400 exactly
-- NEVER say "$342.86 per month" for 7 months (that totals $2401, not $2400)
-- ALWAYS show breakdown: "Monthly Payment: $X.XX × N months, Final Payment: $Y.YY"
+- MANDATORY: Calculate EXACTLY using floor method for ALL terms:
+  * 7 months: $342.85 × 6 + $342.90 = $2400
+  * 8 months: $300.00 × 7 + $300.00 = $2400  
+  * 9 months: $266.66 × 8 + $266.72 = $2400 (NOT "$267 × 8 + $272")
+  * 10 months: $240.00 × 9 + $240.00 = $2400
+  * 12 months: $200.00 × 11 + $200.00 = $2400
+- NEVER round payments incorrectly: $267 × 8 + $272 = $2408 (WRONG!)
+- ALWAYS verify: Base × (months-1) + final = $2400 EXACTLY
 - Maximum 12 months WITHOUT documentation, 24 months WITH documentation
 - REJECT any user requests for terms over 12 months without documentation
 
