@@ -16,10 +16,11 @@ export async function POST(req: NextRequest) {
   // Read the request body once at the start
   const { message, conversationHistory, totalDebt, uploadedFiles } = await req.json();
   
+  // Process uploaded documents with GPT Vision
+  let documentAnalysis = '';
+  let documentApproved = false;
+
   try {
-    // Process uploaded documents with GPT Vision
-    let documentAnalysis = '';
-    let documentApproved = false;
     
     if (uploadedFiles && uploadedFiles.length > 0) {
       const imageFiles = uploadedFiles.filter((file: any) => 
